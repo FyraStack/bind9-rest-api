@@ -3,31 +3,31 @@ use axum::extract::State;
 use axum::routing::get;
 use dns_update::{DnsUpdater, TsigAlgorithm};
 use serde::Deserialize;
-use sqlx::{Pool, Postgres};
 use sqlx::postgres::PgPoolOptions;
+use sqlx::{Pool, Postgres};
 use stable_eyre::Result;
-use tracing_subscriber::EnvFilter;
-use tracing::level_filters::LevelFilter;
-use std::sync::Arc;
 use std::fs;
+use std::sync::Arc;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
 
 struct AppState {
     db_pool: Pool<Postgres>,
-    dns_updater: DnsUpdater
+    dns_updater: DnsUpdater,
 }
 
 #[derive(Deserialize)]
 struct Config {
     postgres_connection_url: String,
     port: String,
-    dns: DNSConfig
+    dns: DNSConfig,
 }
 
 #[derive(Deserialize)]
 struct DNSConfig {
     addr: String,
     key_name: String,
-    key: String
+    key: String,
 }
 
 #[tokio::main]
@@ -56,7 +56,8 @@ async fn main() -> Result<()> {
 async fn create_state_from_config(config: &Config) -> Result<AppState> {
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&config.postgres_connection_url).await?;
+        .connect(&config.postgres_connection_url)
+        .await?;
 
     let dns_client = DnsUpdater::new_rfc2136_tsig(
         &config.dns.addr,
@@ -68,15 +69,11 @@ async fn create_state_from_config(config: &Config) -> Result<AppState> {
 
     Ok(AppState {
         db_pool: pool,
-        dns_updater: dns_client
+        dns_updater: dns_client,
     })
 }
 
-async fn health(
-    State(state): State<Arc<AppState>>,
-) {
-
-}
+async fn health(State(state): State<Arc<AppState>>) {}
 
 pub fn env_filter(debug_target: Option<&str>) -> EnvFilter {
     let env = std::env::var("ODOROBO_LOG").unwrap_or_else(|_| "".into());
@@ -102,7 +99,6 @@ pub fn env_filter(debug_target: Option<&str>) -> EnvFilter {
 
     base
 }
-
 
 pub fn init(debug_target: Option<&str>) -> Result<()> {
     stable_eyre::install()?;
