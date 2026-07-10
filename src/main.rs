@@ -1,82 +1,57 @@
-use axum::Router;
-use axum::extract::State;
-use axum::routing::get;
-use dns_update::{DnsUpdater, TsigAlgorithm};
-use serde::Deserialize;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::{Pool, Postgres};
-use stable_eyre::Result;
-use std::fs;
 use std::sync::Arc;
+
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
-struct AppState {
-    db_pool: Pool<Postgres>,
-    dns_updater: DnsUpdater,
-}
+use stable_eyre::Result;
 
-#[derive(Deserialize)]
-struct Config {
-    postgres_connection_url: String,
-    port: String,
-    dns: DNSConfig,
-}
-
-#[derive(Deserialize)]
-struct DNSConfig {
-    addr: String,
-    key_name: String,
-    key: String,
-}
+mod config;
+mod db;
+mod dns_client;
+mod reconciler;
+mod routes;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     init(Some("bind9-rest-api"))?;
 
-    let config: Config = if let Ok(file) = fs::File::open("config.json") {
-        serde_json::from_reader(file).expect("unable to parse config.json")
-    } else {
-        panic!("No config file found");
+    let config = Arc::new(config::Config::from_file("config.json"));
+
+    let db_pool = db::create_pool(&config.postgres_connection_url).await?;
+    db::migrate(&db_pool).await?;
+
+    let dns_client = dns_client::DnsClient::new(
+        &config.dns.addr,
+        &config.dns.key_name,
+        config.dns.key.as_bytes().to_vec(),
+        hickory_proto::rr::rdata::tsig::TsigAlgorithm::HmacSha512,
+    )
+    .map_err(|e| stable_eyre::Report::msg(e.to_string()))?;
+
+    // Start background reconciler
+    reconciler::spawn_reconciler(
+        db_pool.clone(),
+        dns_client.clone(),
+        config.reconciler_interval_secs,
+    );
+
+    let state = routes::AppState {
+        db: db_pool,
+        dns: dns_client,
     };
 
-    let shared_state = Arc::new(create_state_from_config(&config).await?);
-
-    let app = Router::new()
-        .route("/health", get(health))
-        .with_state(shared_state);
+    let app = routes::router(state);
 
     let addr = format!("0.0.0.0:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    tracing::info!("Listening on {addr}");
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
 }
 
-async fn create_state_from_config(config: &Config) -> Result<AppState> {
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&config.postgres_connection_url)
-        .await?;
-
-    let dns_client = DnsUpdater::new_rfc2136_tsig(
-        &config.dns.addr,
-        &config.dns.key_name,
-        config.dns.key.clone(),
-        TsigAlgorithm::HmacSha512,
-    )
-    .unwrap();
-
-    Ok(AppState {
-        db_pool: pool,
-        dns_updater: dns_client,
-    })
-}
-
-async fn health(State(state): State<Arc<AppState>>) {}
-
 pub fn env_filter(debug_target: Option<&str>) -> EnvFilter {
-    let env = std::env::var("ODOROBO_LOG").unwrap_or_else(|_| "".into());
+    let env = std::env::var("BIND9_REST_LOG").unwrap_or_else(|_| "".into());
 
     let base = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
