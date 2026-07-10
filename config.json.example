@@ -1,0 +1,9 @@
+{
+  "postgres_connection_url": "postgres://postgres:password@localhost/test",
+  "port": "3000",
+  "dns": {
+    "addr": "tcp://127.0.0.1:53",
+    "key_name": "<KEY_NAME>",
+    "key": "<TSIG_KEY>"
+  }
+}
